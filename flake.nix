@@ -9,7 +9,7 @@
     };
 
     manager = {
-      url = "git+https://github.com/selfprivacy-over-alternative-nets/Manager-Ubuntu-SelfPrivacy-Over-Tor.git";
+      url = "git+https://github.com/selfprivacy-over-alternative-nets/Manager-Ubuntu-SelfPrivacy-Over-alternative-nets.git";
       flake = false;
     };
   };
