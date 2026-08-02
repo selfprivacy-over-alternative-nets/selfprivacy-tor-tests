@@ -523,11 +523,13 @@ with open('/etc/nixos/userdata.json', 'w') as f:
     )
     backend.succeed("systemctl restart selfprivacy-api")
     backend.wait_for_unit("selfprivacy-api.service")
+    backend.wait_for_open_port(5050, timeout=60)
 
     # ── 7. Share TLS cert with client (Python HTTP, backend port 8080) ───────
     backend.succeed(
         "python3 -m http.server 8080 --directory /etc/ssl/selfprivacy &"
     )
+    backend.wait_for_open_port(8080, timeout=30)
     client.succeed(
         f"curl -sf http://{backend.ip_address}:8080/cert.pem -o /tmp/backend-cert.pem"
     )
