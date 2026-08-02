@@ -41,18 +41,20 @@
       };
 
       # Interactive drivers for debugging Level 2
-      packages.${system}.level2-driver =
-        (pkgs.testers.runNixOSTest (
-          import ./tests/level2/tor-integration.nix {
-            inherit pkgs selfprivacy-api manager;
-          }
-        )).driverInteractive;
+      packages.${system} = {
+        level2-driver =
+          (pkgs.testers.runNixOSTest (
+            import ./tests/level2/tor-integration.nix {
+              inherit pkgs selfprivacy-api manager;
+            }
+          )).driverInteractive;
 
-      packages.${system}.level2-https-driver =
-        (pkgs.testers.runNixOSTest (
-          import ./tests/level2/https-integration.nix {
-            inherit pkgs selfprivacy-api manager;
-          }
-        )).driverInteractive;
+        level2-https-driver =
+          (pkgs.testers.runNixOSTest (
+            import ./tests/level2/https-integration.nix {
+              inherit pkgs selfprivacy-api manager;
+            }
+          )).driverInteractive;
+      };
     };
 }
