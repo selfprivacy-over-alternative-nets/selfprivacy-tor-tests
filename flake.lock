@@ -60,11 +60,11 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1785664169,
-        "narHash": "sha256-Vqjqdxgz85yxbQzPLdzVyzJ88fUwrrV7/Cgv6TOm8XM=",
+        "lastModified": 1785695053,
+        "narHash": "sha256-usb6fcJQ17d9Llv8Zdky/GiZXg3wKWs39LrmuarwSaM=",
         "ref": "tor-support",
-        "rev": "1b1cbffaa0d94a86c52a35fbee8c2f481355511b",
-        "revCount": 2029,
+        "rev": "e7bd7c4a483f690f76381e8a7e0f0db187925b5e",
+        "revCount": 2030,
         "type": "git",
         "url": "https://github.com/selfprivacy-over-alternative-nets/selfprivacy-api.git"
       },
