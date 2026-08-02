@@ -114,6 +114,7 @@ in
       services.redis.package = pkgs.valkey;
       services.redis.servers.${redis-srv} = {
         enable = true;
+        port = 0;  # unix socket only; path /run/redis-sp-api/redis.sock
         save = [ ];
         settings.notify-keyspace-events = "KEA";
       };
@@ -144,6 +145,7 @@ in
           gitMinimal
           iproute2
           util-linux
+          nix  # FlakeServiceManager needs `nix eval` for is_installed()
         ];
         serviceConfig = {
           User = "root";
@@ -324,6 +326,9 @@ in
       environment.etc."sp-modules/matrix".text =
         mkMinimalServiceDef "matrix" "Matrix";
 
+      # ── Nix experimental features (required by FlakeServiceManager's nix eval) ─
+      nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
       # ── Userdata: written as a real file (not symlink) so it's writable ──────
       # The testScript updates the domain field to the actual .onion address.
       system.activationScripts.selfprivacy-userdata = {
@@ -354,6 +359,8 @@ in
               cp ${initialUserdata} /etc/nixos/userdata.json
               chmod 644 /etc/nixos/userdata.json
             }
+            # Minimal flake.nix so FlakeServiceManager can evaluate it (is_installed)
+            [ -f /etc/nixos/flake.nix ] || echo '{ description = "test"; inputs = {}; outputs = _: {}; }' > /etc/nixos/flake.nix
           '';
       };
 
@@ -404,6 +411,7 @@ in
   # ── Test script ──────────────────────────────────────────────────────────────
   testScript = ''
     import json
+    import base64
 
     start_all()
 
@@ -441,9 +449,11 @@ in
     tor_config = "\n".join(dirserver_lines)
 
     # ── 3. Inject DirServer config into all DAs and restart ─────────────────
+    # Encode as base64 to safely transfer multi-line config via shell command.
+    tor_config_b64 = base64.b64encode(tor_config.encode()).decode()
     for i in range(3):
         das.succeed(
-            f"printf '%s\\n' {repr(tor_config)} > /var/lib/tor-da/{i}/dirservers.conf"
+            f"echo '{tor_config_b64}' | base64 --decode > /var/lib/tor-da/{i}/dirservers.conf"
         )
         das.succeed(f"systemctl restart tor-da-{i}")
 
@@ -452,12 +462,12 @@ in
 
     # ── 4. Inject DirServer config into backend and client ───────────────────
     backend.succeed(
-        f"printf '%s\\n' {repr(tor_config)} > /var/lib/tor/dirservers.conf"
+        f"echo '{tor_config_b64}' | base64 --decode > /var/lib/tor/dirservers.conf"
     )
     backend.succeed("systemctl restart selfprivacy-tor")
 
     client.succeed(
-        f"printf '%s\\n' {repr(tor_config)} > /var/lib/tor-client/dirservers.conf"
+        f"echo '{tor_config_b64}' | base64 --decode > /var/lib/tor-client/dirservers.conf"
     )
     client.succeed("systemctl restart selfprivacy-tor-client")
 
@@ -469,6 +479,20 @@ in
     onion = backend.succeed(
         "cat /var/lib/tor/hidden_service/hostname"
     ).strip()
+
+    # ── 5b. Regenerate TLS cert with the real onion SAN ──────────────────────
+    # The cert service ran at boot BEFORE the HS hostname was available, so it
+    # used the DNS:*.onion fallback.  Now that we have the real address, restart
+    # it so the cert contains DNS:{onion} — required for T2.10 and for curl's
+    # wildcard-refusal on bare-TLD patterns.
+    backend.succeed("systemctl restart selfprivacy-generate-ssl-cert.service")
+    backend.wait_for_unit("selfprivacy-generate-ssl-cert.service", timeout=120)
+    backend.wait_until_succeeds(
+        "test -f /etc/ssl/selfprivacy/cert.pem",
+        timeout=30,
+    )
+    # Reload nginx so it serves the new cert (file path unchanged, content updated).
+    backend.succeed("systemctl reload nginx")
 
     # ── 6. Update backend userdata to use the real .onion domain ─────────────
     # /etc/nixos/userdata.json is a writable real file (created by activationScript).
@@ -484,13 +508,6 @@ with open('/etc/nixos/userdata.json', 'w') as f:
     )
     backend.succeed("systemctl restart selfprivacy-api")
     backend.wait_for_unit("selfprivacy-api.service")
-
-    # Cert generation restarts after Tor restarts; wait for it to complete.
-    backend.wait_for_unit("selfprivacy-generate-ssl-cert.service", timeout=120)
-    backend.wait_until_succeeds(
-        "test -f /etc/ssl/selfprivacy/cert.pem",
-        timeout=30,
-    )
 
     # ── 7. Share TLS cert with client (Python HTTP, backend port 8080) ───────
     backend.succeed(
