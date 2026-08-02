@@ -40,6 +40,9 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -la /dev/kvm
 
+      - name: Update manager flake input to latest commit
+        run: nix flake update manager
+
       - name: Run ${{ matrix.test }}
         run: |
           nix build .#checks.x86_64-linux.${{ matrix.test }} --no-link -L
