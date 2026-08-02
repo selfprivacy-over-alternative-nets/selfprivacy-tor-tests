@@ -359,8 +359,23 @@ in
               cp ${initialUserdata} /etc/nixos/userdata.json
               chmod 644 /etc/nixos/userdata.json
             }
-            # Minimal flake.nix so FlakeServiceManager can evaluate it (is_installed)
-            [ -f /etc/nixos/flake.nix ] || echo '{ description = "test"; inputs = {}; outputs = _: {}; }' > /etc/nixos/flake.nix
+            # FlakeServiceManager (tor-support branch) reads /etc/nixos/sp-modules/flake.nix.
+            # Without it, TemplatedService.is_installed() raises FileNotFoundError and
+            # the entire allServices GraphQL query fails.
+            mkdir -p /etc/nixos/sp-modules
+            if [ ! -f /etc/nixos/sp-modules/flake.nix ]; then
+              cat > /etc/nixos/sp-modules/flake.nix << 'EONIX'
+{
+  description = "SelfPrivacy NixOS PoC modules/extensions/bundles/packages/etc";
+
+  inputs.nextcloud.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/nextcloud";
+  inputs.gitea.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/gitea";
+  inputs.matrix.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/matrix";
+
+  outputs = _: { };
+}
+EONIX
+            fi
           '';
       };
 

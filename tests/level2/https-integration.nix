@@ -70,10 +70,24 @@ in
           EOJSON
           chmod 600 /etc/nixos/userdata.json
 
-          # Minimal flake.nix stub so FlakeServiceManager can evaluate it
-          [ -f /etc/nixos/flake.nix ] || echo \
-            '{ description = "test"; inputs = {}; outputs = _: {}; }' \
-            > /etc/nixos/flake.nix
+          # FlakeServiceManager (tor-support branch) reads /etc/nixos/sp-modules/flake.nix.
+          # Without it, TemplatedService.is_installed() raises FileNotFoundError.
+          mkdir -p /etc/nixos/sp-modules
+          if [ ! -f /etc/nixos/sp-modules/flake.nix ]; then
+            cat > /etc/nixos/sp-modules/flake.nix << 'EONIX'
+{
+  description = "SelfPrivacy NixOS PoC modules/extensions/bundles/packages/etc";
+
+  inputs.nextcloud.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/nextcloud";
+  inputs.gitea.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/gitea";
+  inputs.jitsi-meet.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/jitsi-meet";
+  inputs.matrix.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/matrix";
+  inputs.monitoring.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/monitoring";
+
+  outputs = _: { };
+}
+EONIX
+          fi
 
           # Service metadata stubs (sp-module schema v1)
           for svc in nextcloud gitea jitsi-meet matrix monitoring; do
