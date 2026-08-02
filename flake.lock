@@ -3,11 +3,11 @@
     "manager": {
       "flake": false,
       "locked": {
-        "lastModified": 1785660904,
-        "narHash": "sha256-Hazu1P0PJc2gVAV6LqLZq3egszV6V0bwOySjgHeCJL0=",
+        "lastModified": 1785663860,
+        "narHash": "sha256-O0XHC/yxp/uYrOmOneW5Almo2YJa5ZTr1yIB1VSaJKg=",
         "ref": "refs/heads/main",
-        "rev": "b5f21beb81dafba19eaef87943a0804dc32f1b4b",
-        "revCount": 43,
+        "rev": "428b5b9f7ce0348cd90baebd835e5bfe3dc091c8",
+        "revCount": 44,
         "type": "git",
         "url": "https://github.com/selfprivacy-over-alternative-nets/Manager-Ubuntu-SelfPrivacy-Over-alternative-nets.git"
       },
