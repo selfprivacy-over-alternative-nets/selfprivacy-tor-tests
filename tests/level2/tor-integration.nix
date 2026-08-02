@@ -576,19 +576,19 @@ with open('/etc/nixos/userdata.json', 'w') as f:
         f" -d '{{\"query\": \"{{ services {{ allServices {{ id url }} }} }}\"}}'",
     )
     services_data = json.loads(services_result)
-    services = {{
+    services = {
         s["id"]: s["url"]
         for s in services_data["data"]["services"]["allServices"]
         if s.get("url")
-    }}
+    }
 
-    expected = {{
+    expected = {
         "nextcloud":      f"{URL}/nextcloud/",
         "gitea":          f"{URL}/git/",
         "matrix":         f"{URL}/_matrix/",
         "monitoring":     f"{URL}/prometheus/",
         "selfprivacy-api": f"{URL}/api/",
-    }}
+    }
     for svc_id, expected_url in expected.items():
         actual = services.get(svc_id)
         assert actual == expected_url, (
@@ -602,7 +602,7 @@ with open('/etc/nixos/userdata.json', 'w') as f:
             )
 
     # ── T2.5–T2.9: nginx path reachability (non-404 = routing works) ─────────
-    ROUTED = {{"200", "301", "302", "401", "403", "502"}}
+    ROUTED = {"200", "301", "302", "401", "403", "502"}
     path_checks = [
         ("/api/version",  "200"),  # T2.5: API must return 200
         ("/nextcloud/",   None),   # T2.6: non-404 (502 ok if NC not running)
