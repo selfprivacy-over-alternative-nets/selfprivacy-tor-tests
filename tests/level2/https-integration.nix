@@ -70,24 +70,22 @@ in
           EOJSON
           chmod 600 /etc/nixos/userdata.json
 
-          # FlakeServiceManager (tor-support branch) reads /etc/nixos/sp-modules/flake.nix.
-          # Without it, TemplatedService.is_installed() raises FileNotFoundError.
-          mkdir -p /etc/nixos/sp-modules
-          if [ ! -f /etc/nixos/sp-modules/flake.nix ]; then
-            cat > /etc/nixos/sp-modules/flake.nix << 'EONIX'
+          # FlakeServiceManager (current API) reads /etc/nixos/flake.nix via `nix eval`.
+          # Inputs with sp-module- prefix are treated as installed services.
+          [ -f /etc/nixos/flake.nix ] || cat > /etc/nixos/flake.nix << 'EOFLAKE'
 {
-  description = "SelfPrivacy NixOS PoC modules/extensions/bundles/packages/etc";
-
-  inputs.nextcloud.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/nextcloud";
-  inputs.gitea.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/gitea";
-  inputs.jitsi-meet.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/jitsi-meet";
-  inputs.matrix.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/matrix";
-  inputs.monitoring.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/monitoring";
-
-  outputs = _: { };
+  description = "SelfPrivacy NixOS configuration";
+  inputs = {
+    selfprivacy-nixos-config = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes"; };
+    sp-module-nextcloud = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/nextcloud"; };
+    sp-module-gitea = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/gitea"; };
+    sp-module-jitsi-meet = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/jitsi-meet"; };
+    sp-module-matrix = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/matrix"; };
+    sp-module-monitoring = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/monitoring"; };
+  };
+  outputs = _: {};
 }
-EONIX
-          fi
+EOFLAKE
 
           # Service metadata stubs (sp-module schema v1)
           for svc in nextcloud gitea jitsi-meet matrix monitoring; do

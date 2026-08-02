@@ -359,22 +359,22 @@ in
               cp ${initialUserdata} /etc/nixos/userdata.json
               chmod 644 /etc/nixos/userdata.json
             }
-            # FlakeServiceManager (tor-support branch) reads /etc/nixos/sp-modules/flake.nix.
-            # Without it, TemplatedService.is_installed() raises FileNotFoundError and
-            # the entire allServices GraphQL query fails.
-            mkdir -p /etc/nixos/sp-modules
-            if [ ! -f /etc/nixos/sp-modules/flake.nix ]; then
-              cat > /etc/nixos/sp-modules/flake.nix << 'EONIX'
+            # FlakeServiceManager (current API) reads /etc/nixos/flake.nix via `nix eval`.
+            # Without sp-module- prefixed inputs, is_installed() returns false for all
+            # templated services and the allServices URL assertions in T2.4 fail.
+            if [ ! -f /etc/nixos/flake.nix ]; then
+              cat > /etc/nixos/flake.nix << 'EOFLAKE'
 {
-  description = "SelfPrivacy NixOS PoC modules/extensions/bundles/packages/etc";
-
-  inputs.nextcloud.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/nextcloud";
-  inputs.gitea.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/gitea";
-  inputs.matrix.url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/matrix";
-
-  outputs = _: { };
+  description = "SelfPrivacy NixOS configuration";
+  inputs = {
+    selfprivacy-nixos-config = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes"; };
+    sp-module-nextcloud = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/nextcloud"; };
+    sp-module-gitea = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/gitea"; };
+    sp-module-matrix = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/matrix"; };
+  };
+  outputs = _: {};
 }
-EONIX
+EOFLAKE
             fi
           '';
       };
