@@ -10,10 +10,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tor-integration:
-    name: Level 2 nixosTest
+  level2:
+    name: Level 2 nixosTests
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - tor-integration
+          - https-integration
 
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +40,6 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -la /dev/kvm
 
-      - name: Run tor-integration test
+      - name: Run ${{ matrix.test }}
         run: |
-          nix build .#checks.x86_64-linux.tor-integration --no-link -L
+          nix build .#checks.x86_64-linux.${{ matrix.test }} --no-link -L
