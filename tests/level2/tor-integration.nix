@@ -12,10 +12,24 @@
 
 let
   sp-api-pkg = selfprivacy-api.packages.x86_64-linux.default;
-  workerPython = pkgs.python312.withPackages (ps: [
+  # Build the worker env from the api package's OWN python interpreter.
+  # sp-api-pkg is built against the selfprivacy-api flake's nixpkgs, which
+  # differs from this test's `pkgs`; using `pkgs.python312` here mixes two
+  # nixpkgs and makes `import selfprivacy_api` fail (ModuleNotFoundError).
+  workerPython = sp-api-pkg.pythonModule.withPackages (ps: [
     sp-api-pkg
     ps.huey
   ]);
+
+  # Bogus DirAuthority line used at first boot (phase 1). A Tor node only
+  # accepts a private IP address if it does NOT use the default directory
+  # authorities, so every Tor instance needs at least one custom DirAuthority
+  # line even before the real ones (with v3ident + relay fingerprint) are
+  # injected by the testScript. Replaced by /…/dirservers.conf once present.
+  torPlaceholder =
+    "DirAuthority ph orport=5000 no-v2 "
+    + "v3ident=0000000000000000000000000000000000000000 "
+    + "10.0.0.1:7000 1111111111111111111111111111111111111111";
 
   # Minimal service definition JSON for templated services.
   # The API reads these from /etc/sp-modules/ to populate allServices.
@@ -39,66 +53,185 @@ in
     # DirPorts (7000-7002) and ORPorts (5000-5002) bind on all interfaces
     # so the backend and client nodes can reach them.
     das = { pkgs, lib, ... }:
-    {
-      environment.systemPackages = [ pkgs.tor ];
+    let
+      torBin = "${pkgs.tor}/bin/tor";
+      gencert = "${pkgs.tor}/bin/tor-gencert";
+      # A v3 directory authority will not start without pre-generated identity/
+      # signing keys + certificate (tor-gencert), and a Tor relay on a private
+      # IP needs a custom DirAuthority line (torPlaceholder) to boot. Three
+      # authorities alone cannot host an onion service (path selection fails
+      # with "invalid selected path"), so we also run three plain relays to
+      # enlarge the circuit pool. EnforceDistinctSubnets 0 lets all these
+      # same-host relays be used together in a single circuit.
+      commonTesting = ''
+        echo "TestingTorNetwork 1"
+        echo "DirAllowPrivateAddresses 1"
+        echo "ExitPolicyRejectPrivate 0"
+        echo "EnforceDistinctSubnets 0"
+        # Skip ORPort reachability self-test: a fresh test network has no Guard
+        # relays yet, so no node can build the self-test circuit — without this
+        # the relays never get voted Running and the consensus has 0% guard bw.
+        echo "AssumeReachable 1"
+      '';
+      authoritiesOrPlaceholder = ''
+        if [ -s /var/lib/tor-da/dirservers.conf ]; then
+          cat /var/lib/tor-da/dirservers.conf
+        else
+          echo '${torPlaceholder}'
+        fi
+      '';
+      # Resolve THIS node's VLAN IP (192.168.x.x). Must match the address other
+      # nodes use (getent ahostsv4 das) — NOT eth0's QEMU user-NAT 10.0.2.15,
+      # which is what `scope global | head` would pick. Retry: the VLAN IP is not
+      # assigned the instant preStart runs.
+      myip = ''
+        MYIP=""
+        for _ in $(seq 1 60); do
+          MYIP=$(${pkgs.iproute2}/bin/ip -4 -o addr show \
+            | grep -oE '192[.]168[.][0-9]+[.][0-9]+' | head -n1)
+          [ -n "$MYIP" ] && break
+          sleep 1
+        done
+      '';
 
-      networking.firewall = {
-        enable = true;
-        allowedTCPPorts = (lib.range 5000 5002) ++ (lib.range 7000 7002);
-      };
-
-      systemd.tmpfiles.rules = [
-        "d /var/lib/tor-da/0 0700 root root -"
-        "d /var/lib/tor-da/1 0700 root root -"
-        "d /var/lib/tor-da/2 0700 root root -"
-        "f /var/lib/tor-da/0/dirservers.conf 0600 root root -"
-        "f /var/lib/tor-da/1/dirservers.conf 0600 root root -"
-        "f /var/lib/tor-da/2/dirservers.conf 0600 root root -"
-      ];
-
-      # Generate one systemd service per DA (0, 1, 2).
-      # Phase 1 (initial): starts with no DirServer lines → generates keys.
-      # Phase 2 (after testScript injects config): restarts with all DirServer lines.
-      systemd.services = lib.listToAttrs (lib.map (i:
-        lib.nameValuePair "tor-da-${toString i}" {
-          description = "Tor directory authority ${toString i}";
-          wantedBy = [ "multi-user.target" ];
-          after = [ "network.target" "systemd-tmpfiles-setup.service" ];
-          serviceConfig = {
-            Type = "simple";
-            Restart = "on-failure";
-            RestartSec = "3";
-            User = "root";
-          };
-          preStart = ''
-            mkdir -p /var/lib/tor-da/${toString i}
+      # One-shot keygen for ALL authorities, run once sequentially at boot. Doing
+      # tor-gencert (crypto) in six parallel service preStarts starved the VM and
+      # made backdoor.service's serial device time out, so it lives here instead.
+      keygenScript = ''
+        ${myip}
+        for i in 0 1 2; do
+          D=/var/lib/tor-da/$i
+          mkdir -p $D/keys
+          if [ ! -f $D/keys/authority_certificate ]; then
+            echo "" | ${gencert} --create-identity-key \
+              -i $D/keys/authority_identity_key \
+              -s $D/keys/authority_signing_key \
+              -c $D/keys/authority_certificate \
+              -m 12 -a "$MYIP:$((7000 + i))" --passphrase-fd 0
+          fi
+          if [ ! -f $D/fingerprint ]; then
             {
-              echo "DataDirectory /var/lib/tor-da/${toString i}"
-              echo "DirPort 0.0.0.0:${toString (7000 + i)}"
-              echo "ORPort 0.0.0.0:${toString (5000 + i)}"
-              echo "Nickname da${toString i}"
+              echo "DataDirectory $D"
+              echo "DirPort 0.0.0.0:$((7000 + i))"
+              echo "ORPort 0.0.0.0:$((5000 + i))"
+              echo "Address $MYIP"
+              echo "Nickname da$i"
               echo "AuthoritativeDirectory 1"
               echo "V3AuthoritativeDirectory 1"
               echo "TestingTorNetwork 1"
               echo "DirAllowPrivateAddresses 1"
-              echo "ExitPolicyRejectPrivate 0"
-              echo "TestingV3AuthVotingInterval 20"
-              echo "TestingV3AuthInitialVotingInterval 20"
-              echo "TestingV3AuthVotingStartOffset 0"
-              echo "TestingV3AuthInitialVoteDelay 5"
-              echo "TestingV3AuthInitialDistDelay 5"
-              echo "TestingMinExitFlagThreshold 0"
-              echo "MinUptimeHidServ 0"
               echo "SocksPort 0"
-            } > /var/lib/tor-da/${toString i}/torrc
-            if [ -s /var/lib/tor-da/${toString i}/dirservers.conf ]; then
-              cat /var/lib/tor-da/${toString i}/dirservers.conf \
-                >> /var/lib/tor-da/${toString i}/torrc
-            fi
-          '';
-          script = "${pkgs.tor}/bin/tor -f /var/lib/tor-da/${toString i}/torrc";
-        }
-      ) [ 0 1 2 ]);
+              echo '${torPlaceholder}'
+            } > $D/fpgen-torrc
+            ${torBin} --list-fingerprint -f $D/fpgen-torrc || true
+          fi
+        done
+      '';
+
+      # The tor-da/tor-relay services only start once the testScript has written
+      # /var/lib/tor-da/dirservers.conf (phase 2) — ConditionPathExists keeps them
+      # from restart-looping (and pinning the CPU) during the boot window.
+      mkAuthority = i: lib.nameValuePair "tor-da-${toString i}" {
+        description = "Tor directory authority ${toString i}";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network.target" "tor-da-keygen.service" ];
+        wants = [ "tor-da-keygen.service" ];
+        unitConfig.ConditionPathExists = "/var/lib/tor-da/dirservers.conf";
+        serviceConfig = { Type = "simple"; Restart = "on-failure"; RestartSec = "3"; User = "root"; };
+        preStart = ''
+          ${myip}
+          D=/var/lib/tor-da/${toString i}
+          {
+            echo "DataDirectory $D"
+            echo "DirPort 0.0.0.0:${toString (7000 + i)}"
+            echo "ORPort 0.0.0.0:${toString (5000 + i)}"
+            echo "Address $MYIP"
+            echo "Nickname da${toString i}"
+            echo "AuthoritativeDirectory 1"
+            echo "V3AuthoritativeDirectory 1"
+            ${commonTesting}
+            # Vote Guard/Exit/HSDir for every relay so onion circuits can be
+            # built immediately (bypasses the familiarity/uptime requirements).
+            echo "TestingDirAuthVoteGuard *"
+            echo "TestingDirAuthVoteExit *"
+            echo "TestingDirAuthVoteHSDir *"
+            echo "V3AuthVotingInterval 20"
+            echo "V3AuthVoteDelay 4"
+            echo "V3AuthDistDelay 4"
+            echo "TestingV3AuthInitialVotingInterval 20"
+            echo "TestingV3AuthInitialVoteDelay 4"
+            echo "TestingV3AuthInitialDistDelay 4"
+            echo "TestingV3AuthVotingStartOffset 0"
+            echo "TestingMinExitFlagThreshold 0"
+            echo "MinUptimeHidServDirectoryV2 0"
+            echo "SocksPort 0"
+            cat /var/lib/tor-da/dirservers.conf
+          } > $D/torrc
+        '';
+        script = "${torBin} -f /var/lib/tor-da/${toString i}/torrc";
+      };
+
+      mkRelay = r: lib.nameValuePair "tor-relay-${toString r}" {
+        description = "Tor relay ${toString r}";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network.target" "tor-da-keygen.service" ];
+        unitConfig.ConditionPathExists = "/var/lib/tor-da/dirservers.conf";
+        serviceConfig = { Type = "simple"; Restart = "on-failure"; RestartSec = "3"; User = "root"; };
+        preStart = ''
+          ${myip}
+          D=/var/lib/tor-da/relay${toString r}
+          mkdir -p $D
+          {
+            echo "DataDirectory $D"
+            echo "ORPort 0.0.0.0:${toString (5010 + r)}"
+            echo "Address $MYIP"
+            echo "Nickname relay${toString r}"
+            echo "SocksPort 0"
+            ${commonTesting}
+            cat /var/lib/tor-da/dirservers.conf
+          } > $D/torrc
+        '';
+        script = "${torBin} -f /var/lib/tor-da/relay${toString r}/torrc";
+      };
+    in
+    {
+      # Extra CPU/RAM: this node runs six Tor instances plus key generation.
+      virtualisation.cores = 4;
+      virtualisation.memorySize = 2048;
+
+      environment.systemPackages = [ pkgs.tor pkgs.iproute2 ];
+
+      networking.firewall = {
+        enable = true;
+        # authority ORPorts (5000-5002) + DirPorts (7000-7002) + relay ORPorts (5010-5012)
+        allowedTCPPorts =
+          (lib.range 5000 5002) ++ (lib.range 5010 5012) ++ (lib.range 7000 7002);
+      };
+
+      systemd.tmpfiles.rules = [
+        "d /var/lib/tor-da 0700 root root -"
+      ];
+
+      # Phase 1 (boot): tor-da-keygen generates all authority certs + relay
+      # fingerprints; the authority/relay services stay dormant (their
+      # ConditionPathExists is unmet). Phase 2: the testScript writes
+      # dirservers.conf and starts them, and a consensus forms.
+      systemd.services = lib.listToAttrs (
+        [ (lib.nameValuePair "tor-da-keygen" {
+            description = "Generate Tor directory-authority keys and fingerprints";
+            wantedBy = [ "multi-user.target" ];
+            after = [ "network.target" "systemd-tmpfiles-setup.service" ];
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              TimeoutStartSec = "600";
+              User = "root";
+            };
+            script = keygenScript;
+          }) ]
+        ++ (lib.map mkAuthority [ 0 1 2 ])
+        ++ (lib.map mkRelay [ 0 1 2 ])
+      );
     };
 
     # ── backend node ──────────────────────���───────────────────────���───────────
@@ -110,6 +243,12 @@ in
       redis-srv = "sp-api";
     in
     {
+      # Heavy node: SelfPrivacy API + huey worker + nginx + redis + Tor HS.
+      # With the default single vCPU, userspace boot took >5 min and the serial
+      # console device (hvc0) timed out, failing backdoor.service.
+      virtualisation.cores = 4;
+      virtualisation.memorySize = 3072;
+
       # ── Redis ───────────────────────────────────────────────────────────────
       services.redis.package = pkgs.valkey;
       services.redis.servers.${redis-srv} = {
@@ -206,12 +345,17 @@ in
             echo "HiddenServiceDir /var/lib/tor/hidden_service"
             echo "HiddenServicePort 443 127.0.0.1:443"
             echo "SocksPort 0"
+            echo "TestingTorNetwork 1"
             echo "DirAllowPrivateAddresses 1"
             echo "ExitPolicyRejectPrivate 0"
+            echo "EnforceDistinctSubnets 0"
+            # Real DirAuthority lines once injected, else the phase-1 placeholder.
+            if [ -s /var/lib/tor/dirservers.conf ]; then
+              cat /var/lib/tor/dirservers.conf
+            else
+              echo '${torPlaceholder}'
+            fi
           } > /var/lib/tor/torrc
-          if [ -s /var/lib/tor/dirservers.conf ]; then
-            cat /var/lib/tor/dirservers.conf >> /var/lib/tor/torrc
-          fi
         '';
         script = "${pkgs.tor}/bin/tor -f /var/lib/tor/torrc";
       };
@@ -251,7 +395,8 @@ in
             -addext "subjectAltName=$SAN" \
             -addext "basicConstraints=critical,CA:TRUE"
           chmod 644 "$CERT_DIR/cert.pem"
-          chmod 640 "$CERT_DIR/key.pem"
+          # World-readable so the nginx user can load it (throwaway test cert).
+          chmod 644 "$CERT_DIR/key.pem"
           echo "Generated TLS cert with SAN=$SAN"
         '';
       };
@@ -390,6 +535,9 @@ EOFLAKE
     # Tor client with SOCKS on port 9050. DirServer lines injected by testScript.
     client = { pkgs, ... }:
     {
+      virtualisation.cores = 2;
+      virtualisation.memorySize = 1536;
+
       environment.systemPackages = with pkgs; [ tor curl openssl jq ];
 
       systemd.tmpfiles.rules = [
@@ -411,12 +559,17 @@ EOFLAKE
           {
             echo "DataDirectory /var/lib/tor-client"
             echo "SocksPort 9050"
+            echo "TestingTorNetwork 1"
             echo "DirAllowPrivateAddresses 1"
             echo "ExitPolicyRejectPrivate 0"
+            echo "EnforceDistinctSubnets 0"
+            # Real DirAuthority lines once injected, else the phase-1 placeholder.
+            if [ -s /var/lib/tor-client/dirservers.conf ]; then
+              cat /var/lib/tor-client/dirservers.conf
+            else
+              echo '${torPlaceholder}'
+            fi
           } > /var/lib/tor-client/torrc
-          if [ -s /var/lib/tor-client/dirservers.conf ]; then
-            cat /var/lib/tor-client/dirservers.conf >> /var/lib/tor-client/torrc
-          fi
         '';
         script = "${pkgs.tor}/bin/tor -f /var/lib/tor-client/torrc";
       };
@@ -431,65 +584,76 @@ EOFLAKE
     start_all()
 
     # ── 1. Wait for DA key generation ────────────────────────────────────────
+    # Each authority's preStart runs tor-gencert (→ authority_certificate) and
+    # tor --list-fingerprint (→ fingerprint) before the main tor starts.
     das.wait_for_unit("network.target")
 
     for i in range(3):
         das.wait_until_succeeds(
-            f"test -f /var/lib/tor-da/{i}/fingerprint",
-            timeout=120
+            f"test -f /var/lib/tor-da/{i}/fingerprint", timeout=120
+        )
+        das.wait_until_succeeds(
+            f"test -f /var/lib/tor-da/{i}/keys/authority_certificate", timeout=120
         )
 
-    # ── 2. Read DA fingerprints and build DirServer config ───────────────────
-    das_ip = das.ip_address
+    # ── 2. Build the real DirAuthority block (v3ident + relay fingerprint) ────
+    # The test driver has no `.ip_address`. Every node's /etc/hosts maps each
+    # machine name to its primary VLAN IP (added by the test framework), so
+    # resolve das's IPv4 from the backend's hosts file.
+    das_ip = backend.succeed(
+        "getent ahostsv4 das | grep -oE '([0-9]+[.]){3}[0-9]+' | head -n1"
+    ).strip()
 
-    dirserver_lines = [
-        "TestingTorNetwork 1",
-        "DirAllowPrivateAddresses 1",
-        "ExitPolicyRejectPrivate 0",
-    ]
+    auth_lines = []
     for i in range(3):
-        da_port = 7000 + i
+        dir_port = 7000 + i
         or_port = 5000 + i
-        fp_line = das.succeed(
-            f"cat /var/lib/tor-da/{i}/fingerprint"
-        ).strip()
-        # Tor writes fingerprint as "Nickname AABB CCDD ..." or "Nickname AABBCCDD..."
-        # Join all parts after the nickname and strip spaces to get 40-char hex.
-        parts = fp_line.split()
-        fp = "".join(parts[1:])
-        dirserver_lines.append(
-            f'DirServer "da{i}" orport={or_port} no-v2 {das_ip}:{da_port} {fp}'
+        # fingerprint file: "da{i} <40-hex relay fingerprint>"
+        relay_fp = das.succeed(f"cat /var/lib/tor-da/{i}/fingerprint").split()[1]
+        # authority_certificate has a line "fingerprint <40-hex v3 identity>"
+        v3ident = das.succeed(
+            f"grep '^fingerprint' /var/lib/tor-da/{i}/keys/authority_certificate | head -n1"
+        ).split()[1]
+        auth_lines.append(
+            f"DirAuthority da{i} orport={or_port} no-v2 "
+            f"v3ident={v3ident} {das_ip}:{dir_port} {relay_fp}"
         )
 
-    tor_config = "\n".join(dirserver_lines)
+    dirservers_b64 = base64.b64encode("\n".join(auth_lines).encode()).decode()
 
-    # ── 3. Inject DirServer config into all DAs and restart ─────────────────
-    # Encode as base64 to safely transfer multi-line config via shell command.
-    tor_config_b64 = base64.b64encode(tor_config.encode()).decode()
+    # ── 3. Inject the DirAuthority lines everywhere and restart all Tor nodes ─
+    # das keeps one shared dirservers.conf read by all its authorities+relays.
+    das.succeed(
+        f"echo '{dirservers_b64}' | base64 --decode > /var/lib/tor-da/dirservers.conf"
+    )
     for i in range(3):
-        das.succeed(
-            f"echo '{tor_config_b64}' | base64 --decode > /var/lib/tor-da/{i}/dirservers.conf"
-        )
         das.succeed(f"systemctl restart tor-da-{i}")
-
-    for i in range(3):
         das.wait_for_unit(f"tor-da-{i}")
+    for r in range(3):
+        das.succeed(f"systemctl restart tor-relay-{r}")
+        das.wait_for_unit(f"tor-relay-{r}")
 
-    # ── 4. Inject DirServer config into backend and client ───────────────────
     backend.succeed(
-        f"echo '{tor_config_b64}' | base64 --decode > /var/lib/tor/dirservers.conf"
+        f"echo '{dirservers_b64}' | base64 --decode > /var/lib/tor/dirservers.conf"
     )
     backend.succeed("systemctl restart selfprivacy-tor")
 
     client.succeed(
-        f"echo '{tor_config_b64}' | base64 --decode > /var/lib/tor-client/dirservers.conf"
+        f"echo '{dirservers_b64}' | base64 --decode > /var/lib/tor-client/dirservers.conf"
     )
     client.succeed("systemctl restart selfprivacy-tor-client")
 
-    # ── 5. Wait for HS hostname (implies DA consensus formed) ────────────────
+    # ── 4. Wait for a consensus listing all six relays as Running ─────────────
+    das.wait_until_succeeds(
+        "test \"$(grep -E '^s .*Running' /var/lib/tor-da/0/cached-consensus "
+        "2>/dev/null | wc -l)\" -ge 6",
+        timeout=300,
+    )
+
+    # ── 5. Read the onion hostname (HS generates it at first boot) ───────────
     backend.wait_until_succeeds(
         "test -f /var/lib/tor/hidden_service/hostname",
-        timeout=300,
+        timeout=120,
     )
     onion = backend.succeed(
         "cat /var/lib/tor/hidden_service/hostname"
@@ -511,27 +675,28 @@ EOFLAKE
 
     # ── 6. Update backend userdata to use the real .onion domain ─────────────
     # /etc/nixos/userdata.json is a writable real file (created by activationScript).
+    # Use jq (not an inline python heredoc) so the testScript has no column-0
+    # lines, which would defeat Nix indented-string dedenting and corrupt it.
     backend.succeed(
-        f"""python3 -c "
-import json
-with open('/etc/nixos/userdata.json') as f:
-    d = json.load(f)
-d['domain'] = '{onion}'
-with open('/etc/nixos/userdata.json', 'w') as f:
-    json.dump(d, f)
-" """
+        f"jq '.domain = \"{onion}\"' /etc/nixos/userdata.json > /tmp/ud.json "
+        f"&& mv /tmp/ud.json /etc/nixos/userdata.json"
     )
     backend.succeed("systemctl restart selfprivacy-api")
     backend.wait_for_unit("selfprivacy-api.service")
-    backend.wait_for_open_port(5050, timeout=60)
+    # The API imports the full strawberry/fastapi app before binding — slow.
+    backend.wait_for_open_port(5050, timeout=180)
 
     # ── 7. Share TLS cert with client (Python HTTP, backend port 8080) ───────
+    # Run as a transient unit: a plain "… &" hangs machine.succeed() because the
+    # backgrounded server inherits the command channel's stdout (never sees EOF).
     backend.succeed(
-        "python3 -m http.server 8080 --directory /etc/ssl/selfprivacy &"
+        "systemd-run --unit=certserver --collect -- "
+        "python3 -m http.server 8080 --directory /etc/ssl/selfprivacy"
     )
     backend.wait_for_open_port(8080, timeout=30)
+    # Reach the backend by hostname — the test framework adds it to /etc/hosts.
     client.succeed(
-        f"curl -sf http://{backend.ip_address}:8080/cert.pem -o /tmp/backend-cert.pem"
+        "curl -sf http://backend:8080/cert.pem -o /tmp/backend-cert.pem"
     )
 
     # ── 8. Wait for Tor circuit to the hidden service ───────���─────────────────
@@ -540,9 +705,11 @@ with open('/etc/nixos/userdata.json', 'w') as f:
     CACERT = "--cacert /tmp/backend-cert.pem"
     URL = f"https://{onion}"
 
+    # A minimal Tor network is slow to publish/fetch the HS descriptor and to
+    # build intro/rendezvous circuits, so allow generous time here.
     client.wait_until_succeeds(
         f"curl {SOCKS} {CACERT} -sf {URL}/api/version",
-        timeout=300,
+        timeout=480,
     )
 
     # ── T2.1: API version endpoint reachable via Tor ──────────────────────────
@@ -561,14 +728,32 @@ with open('/etc/nixos/userdata.json', 'w') as f:
     data = json.loads(gql_result)
     assert "data" in data and "api" in data["data"], f"T2.2 failed: {gql_result}"
 
-    # ── T2.3: Wrong token is rejected ─────────────────────��───────────────────
-    status = client.succeed(
-        f"curl {SOCKS} {CACERT} -s -o /dev/null -w '%{{http_code}}' -X POST {URL}/graphql"
+    # ── T2.3: Wrong token is rejected on an authenticated field ──────────────
+    # api.version is PUBLIC and this GraphQL API returns HTTP 200 with an
+    # `errors` body (not 401/403) on auth failure, so probe the authenticated
+    # `system` field and inspect the JSON instead of the status code.
+    wrong_json = client.succeed(
+        f"curl {SOCKS} {CACERT} -s -X POST {URL}/graphql"
         f" -H 'Authorization: Bearer WRONG'"
         f" -H 'Content-Type: application/json'"
-        f" -d '{{\"query\": \"{{ api {{ version }} }}\"}}'",
-    ).strip()
-    assert status in ("401", "403"), f"T2.3 failed: expected 401/403, got {status}"
+        f" -d '{{\"query\": \"{{ system {{ __typename }} }}\"}}'",
+    )
+    wrong_data = json.loads(wrong_json)
+    assert "errors" in wrong_data and (
+        wrong_data.get("data") is None or wrong_data["data"].get("system") is None
+    ), f"T2.3 failed: wrong token not rejected: {wrong_json}"
+
+    # A valid token DOES grant access to the same authenticated field.
+    right_json = client.succeed(
+        f"curl {SOCKS} {CACERT} -sf -X POST {URL}/graphql"
+        f" -H 'Authorization: Bearer {TOKEN}'"
+        f" -H 'Content-Type: application/json'"
+        f" -d '{{\"query\": \"{{ system {{ __typename }} }}\"}}'",
+    )
+    right_data = json.loads(right_json)
+    assert right_data.get("data", {}).get("system") is not None, (
+        f"T2.3 failed: valid token rejected: {right_json}"
+    )
 
     # ── T2.4: allServices URLs are path-based (not subdomain) for .onion ─────
     services_result = client.succeed(

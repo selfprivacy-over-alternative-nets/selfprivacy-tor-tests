@@ -45,12 +45,13 @@ in
       # secrets.json is read-only via environment.etc (ReadUserData opens r).
       # flake.nix stub so FlakeServiceManager's `nix eval` succeeds.
       # sp-modules/ stubs so allServices has metadata for each service.
-      system.activationScripts.selfprivacy-test-setup = {
-        text = ''
-          mkdir -p /etc/nixos /etc/selfprivacy /etc/sp-modules
-
-          [ -f /etc/nixos/userdata.json ] || cat > /etc/nixos/userdata.json <<'EOJSON'
-          ${builtins.toJSON {
+      # Write config files via writeText + cp (NOT shell here-docs): a here-doc
+      # whose closing delimiter ends up indented in the assembled activate script
+      # runs to EOF, eating the rest of activation so /sbin/init is never created
+      # and the VM freezes at switch-root ("Failed to chase /sysroot/sbin/init").
+      system.activationScripts.selfprivacy-test-setup =
+        let
+          userdataFile = pkgs.writeText "userdata.json" (builtins.toJSON {
             username       = "admin";
             hashedPassword = "";
             sshKeys        = [];
@@ -66,36 +67,60 @@ in
               monitoring    = { enable = true; };
               matrix        = { enable = true; };
             };
-          }}
-          EOJSON
-          chmod 600 /etc/nixos/userdata.json
-
-          # FlakeServiceManager (current API) reads /etc/nixos/flake.nix via `nix eval`.
-          # Inputs with sp-module- prefix are treated as installed services.
-          [ -f /etc/nixos/flake.nix ] || cat > /etc/nixos/flake.nix << 'EOFLAKE'
-{
-  description = "SelfPrivacy NixOS configuration";
-  inputs = {
-    selfprivacy-nixos-config = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes"; };
-    sp-module-nextcloud = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/nextcloud"; };
-    sp-module-gitea = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/gitea"; };
-    sp-module-jitsi-meet = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/jitsi-meet"; };
-    sp-module-matrix = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/matrix"; };
-    sp-module-monitoring = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/monitoring"; };
-  };
-  outputs = _: {};
-}
-EOFLAKE
-
-          # Service metadata stubs (sp-module schema v1)
-          for svc in nextcloud gitea jitsi-meet matrix monitoring; do
-            [ -f /etc/sp-modules/$svc ] || echo \
-              "{\"meta\":{\"spModuleSchemaVersion\":1,\"id\":\"$svc\",\"name\":\"$svc\",\"description\":\"$svc\",\"svgIcon\":\"\",\"isMovable\":false,\"isRequired\":false,\"canBeBackedUp\":true,\"backupDescription\":\"\",\"systemdServices\":[\"$svc.service\"],\"folders\":[],\"license\":[],\"homepage\":\"\",\"sourcePage\":\"\",\"supportLevel\":\"normal\"},\"configPathsNeeded\":[],\"options\":{}}" \
-              > /etc/sp-modules/$svc
-          done
-        '';
-        deps = [];
-      };
+          });
+          # FlakeServiceManager reads /etc/nixos/flake.nix via `nix eval`; inputs
+          # with the sp-module- prefix are treated as installed services. This
+          # must be a Nix expression (outputs is a function), not JSON.
+          flakeFile = pkgs.writeText "flake.nix" ''
+            {
+              description = "SelfPrivacy NixOS configuration";
+              inputs = {
+                selfprivacy-nixos-config = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes"; };
+                sp-module-nextcloud = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/nextcloud"; };
+                sp-module-gitea = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/gitea"; };
+                sp-module-jitsi-meet = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/jitsi-meet"; };
+                sp-module-matrix = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/matrix"; };
+                sp-module-monitoring = { url = "git+https://git.selfprivacy.org/SelfPrivacy/selfprivacy-nixos-config.git?ref=flakes&dir=sp-modules/monitoring"; };
+              };
+              outputs = _: {};
+            }
+          '';
+          mkSvcMeta = svc: pkgs.writeText "sp-module-${svc}" (builtins.toJSON {
+            meta = {
+              spModuleSchemaVersion = 1;
+              id = svc;
+              name = svc;
+              description = svc;
+              svgIcon = "";
+              isMovable = false;
+              isRequired = false;
+              canBeBackedUp = true;
+              backupDescription = "";
+              systemdServices = [ "${svc}.service" ];
+              folders = [];
+              license = [];
+              homepage = "";
+              sourcePage = "";
+              supportLevel = "normal";
+            };
+            configPathsNeeded = [];
+            options = {};
+          });
+        in
+        {
+          deps = [];
+          text = ''
+            mkdir -p /etc/nixos /etc/selfprivacy /etc/sp-modules
+            if [ ! -f /etc/nixos/userdata.json ]; then
+              cp ${userdataFile} /etc/nixos/userdata.json
+              chmod 600 /etc/nixos/userdata.json
+            fi
+            [ -f /etc/nixos/flake.nix ] || cp ${flakeFile} /etc/nixos/flake.nix
+            ${lib.concatMapStringsSep "\n"
+              (svc: "[ -f /etc/sp-modules/${svc} ] || cp ${mkSvcMeta svc} /etc/sp-modules/${svc}")
+              [ "nextcloud" "gitea" "jitsi-meet" "matrix" "monitoring" ]}
+          '';
+        };
 
       # Read-only API token (migration reads with ReadUserData which tolerates symlinks)
       environment.etc."selfprivacy/secrets.json" = {
@@ -104,8 +129,8 @@ EOFLAKE
       };
 
       virtualisation = {
-        memorySize = 2048;
-        cores = 2;
+        memorySize = 3072;
+        cores = 4;
       };
     };
 
@@ -113,8 +138,11 @@ EOFLAKE
     import json
 
     backend.start()
-    backend.wait_for_unit("selfprivacy-api.service", timeout=120)
-    backend.wait_for_open_port(5050, timeout=60)
+    # The API waits for network-online.target (slow under TCG emulation while
+    # dhcpcd waits for carrier), then imports the full strawberry/fastapi app
+    # before binding 5050 — both slow, so allow generous timeouts.
+    backend.wait_for_unit("selfprivacy-api.service", timeout=600)
+    backend.wait_for_open_port(5050, timeout=300)
 
     # ── T3.1: API responds at https://api.<domain>/api/version ──────────────
     result = backend.succeed(
@@ -124,13 +152,15 @@ EOFLAKE
     assert "version" in data, f"T3.1 FAIL — expected 'version' key in: {data}"
     print(f"T3.1 PASS: API version = {data['version']}")
 
-    # ── T3.2: Wrong token is rejected ────────────────────────────────────────
+    # ── T3.2: Wrong token is rejected on an authenticated field ──────────────
+    # api.version is PUBLIC, so probe the authenticated `system` field; auth
+    # failure yields HTTP 200 with an `errors` body (not a status code).
     result = backend.succeed(
         "curl -ks "
         "-X POST https://api.${testDomain}/graphql "
         "-H 'Content-Type: application/json' "
         "-H 'Authorization: Bearer wrong-token' "
-        "-d '{\"query\":\"{ api { version } }\"}'"
+        "-d '{\"query\":\"{ system { __typename } }\"}'"
     )
     data = json.loads(result)
     assert "errors" in data, f"T3.2 FAIL — wrong token should produce errors: {data}"
@@ -194,17 +224,17 @@ EOFLAKE
     )
     data = json.loads(result)
     assert "version" in data, f"T3.6 FAIL — nginx routing broken: {data}"
-    print(f"T3.6 PASS: nginx routes api.${testDomain}")
+    print("T3.6 PASS: nginx routes api.${testDomain}")
 
     # ── T3.7: TLS cert covers domain and wildcard subdomain ───────────────────
     cert_text = backend.succeed(
         "openssl x509 -in /etc/ssl/selfprivacy-https/cert.pem -noout -text"
     )
     assert "${testDomain}" in cert_text, (
-        f"T3.7 FAIL: cert SAN missing ${testDomain}"
+        "T3.7 FAIL: cert SAN missing ${testDomain}"
     )
     assert "*.${testDomain}" in cert_text, (
-        f"T3.7 FAIL: cert SAN missing *.${testDomain}"
+        "T3.7 FAIL: cert SAN missing *.${testDomain}"
     )
     print("T3.7 PASS: TLS cert covers ${testDomain} and *.${testDomain}")
 

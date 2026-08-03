@@ -55,6 +55,23 @@
               inherit pkgs selfprivacy-api manager;
             }
           )).driverInteractive;
+
+        # Non-interactive drivers: `nix run` these as the invoking user (who has
+        # /dev/kvm access) so QEMU uses KVM, unlike `nix build .#checks.*` whose
+        # sandboxed nixbld users cannot open /dev/kvm and fall back to slow TCG.
+        level2-https-run =
+          (pkgs.testers.runNixOSTest (
+            import ./tests/level2/https-integration.nix {
+              inherit pkgs selfprivacy-api manager;
+            }
+          )).driver;
+
+        level2-tor-run =
+          (pkgs.testers.runNixOSTest (
+            import ./tests/level2/tor-integration.nix {
+              inherit pkgs selfprivacy-api manager;
+            }
+          )).driver;
       };
     };
 }
