@@ -10,6 +10,34 @@ Test infrastructure for the SelfPrivacy-over-Tor and SelfPrivacy-HTTPS projects.
 | 2 | `tests/level2/` | NixOS VM tests (`pkgs.testers.runNixOSTest`) |
 | 3 | `tests/level3/` | E2E scripts for real hardware / VirtualBox |
 
+### How the levels map to the usage scenarios
+
+The Manager repo (`Manager-Ubuntu-SelfPrivacy-Over-Tor`) documents the supported deployment
+scenarios — **Method 1** (Ubuntu + VirtualBox backend, scenarios **S.A**) and **Method 2** (native
+NixOS backend, scenarios **S.B / S.C**), with the app on Linux or Android (**S.D**). The test levels
+cover them as follows:
+
+| Level | Validates | Scenarios |
+|-------|-----------|-----------|
+| 1 | URL/onion routing logic in the API — backend-agnostic, no VM | underpins all scenarios |
+| 2 | The **native-NixOS backend** (Tor + HTTPS modules) end-to-end in an automated NixOS VM | Method 2 backend (**S.B / S.C**) |
+| 3 | The **full stack against the real app / browser** over a Tor test net | Method 1 backend + clients (**S.A**, **S.D**); a native variant exists too |
+
+Level 3 has one script per backend method: `setup-chutney-vbox.sh` (Method 1, VirtualBox) and
+`setup-chutney-nixos-native.sh` (Method 2, native NixOS).
+
+## Level 1 (Python unit tests — fast, no VM)
+
+Level 1 lives in the API repo and runs in an ephemeral NixOS VM with Redis (via the API flake's
+`pytest-vm` helper). From the **selfprivacy-api** checkout:
+
+```bash
+cd ../selfprivacy-api      # the selfprivacy-api repo (sibling checkout)
+nix run .#pytest-vm -- tests/test_onion_routing.py -v      # expect "23 passed"
+```
+
+`pytest-vm` accepts any pytest arguments; run the whole suite with `nix run .#pytest-vm`.
+
 ## Level 2 (nixosTest — automated, runs in CI)
 
 ### Prerequisites

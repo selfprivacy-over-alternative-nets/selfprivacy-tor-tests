@@ -1,306 +1,149 @@
 # SelfPrivacy-over-Tor — Handover Document
 
-**Date:** 2026-08-02  
+**Date:** 2026-08-03
 **Project root:** `/home/a/git/personal/selfprivacy/`
 
 ---
 
 ## 1. What This Project Is
 
-SelfPrivacy is a NixOS self-hosting platform. This project adds **Tor .onion access** to it, so
-users with no public IP or firewall restrictions can reach their SelfPrivacy instance over Tor.
-
-The work spans four tasks:
+SelfPrivacy is a NixOS self-hosting platform. This project adds **Tor .onion access** so users
+with no public IP / firewall access can reach their instance over Tor. Four tasks:
 
 | Task | What | Status |
 |------|------|--------|
-| 1 | API changes — onion URL routing, nginx path routing, GraphQL mutations, Tor HS service | **DONE** |
-| 2 | Test infrastructure — 3-level test plan, selfprivacy-tor-tests repo | **DONE** |
-| 3 | Run all tests, fix papercuts | **IN PROGRESS** (see §4) |
-| 4 | Upstream PR to git.selfprivacy.org | **NOT STARTED** (user action, see §6) |
+| 1 | API changes — onion URL routing, nginx path routing, GraphQL, Tor HS service | **DONE** |
+| 2 | Test infrastructure — selfprivacy-tor-tests repo, 3-level test plan | **DONE** |
+| 3 | Run all tests, fix papercuts | **DONE** — all 3 automated suites pass (see §3) |
+| 4 | Upstream PR to git.selfprivacy.org | **NOT STARTED** — user action (see §6) |
+
+**Remaining = user actions only:** Level 3 manual E2E (Flutter/Android) and the upstream PR.
 
 ---
 
-## 2. Repos and Branches
-
-### 2a. selfprivacy-api (API fork)
+## 2. Repos, Branches, Latest Commits (all pushed)
 
 ```
-Local:   /home/a/git/personal/selfprivacy/selfprivacy-api
-Remote:  https://github.com/selfprivacy-over-alternative-nets/selfprivacy-api.git
-Branch:  tor-support
-HEAD:    f690f70f  fix: use disabledTestPaths list to skip flaky sanic timeout test
+selfprivacy-api            /home/a/git/personal/selfprivacy/selfprivacy-api
+  remote  git@github.com:selfprivacy-over-alternative-nets/selfprivacy-api.git
+  branch  tor-support
+  HEAD    91462d2f  fix: await async get_users() in onion-routing user-repo test   (Level 1 fix)
+
+selfprivacy-tor-tests      /home/a/git/personal/selfprivacy/selfprivacy-tor-tests
+  remote  git@github.com:selfprivacy-over-alternative-nets/selfprivacy-tor-tests.git
+  branch  main
+  HEAD    4fec551   docs: fill in how_to_test_what.md
+          1035837   fix(level2): make tor-integration and https-integration tests pass  (the big one)
+
+Manager (Flutter app)      /home/a/git/personal/selfprivacy/Manager-Ubuntu-SelfPrivacy-Over-alternative-nets
+  remote  git@github.com:selfprivacy-over-alternative-nets/Manager-Ubuntu-SelfPrivacy-Over-alternative-nets.git
 ```
 
-Key commits on `tor-support`:
-```
-f690f70f  fix: use disabledTestPaths list to skip flaky sanic timeout test   ← CORRECT sanic fix
-e7bd7c4a  fix: skip sanic flaky timeout test to unblock nixpkgs build         ← wrong (doCheck=false)
-1b1cbffa  docs: add upstream PR submission guide (Task 4)
-ecf33761  refactor: extract TOR_SERVICE_PATHS to onion_routing.py; add unit tests
-c5ee7a96  feat: add Tor .onion subpath URL routing support
-```
-
-### 2b. selfprivacy-tor-tests (test infra, NEW repo)
-
-```
-Local:   /home/a/git/personal/selfprivacy/selfprivacy-tor-tests
-Remote:  https://github.com/selfprivacy-over-alternative-nets/selfprivacy-tor-tests.git  (assumed)
-Branch:  main
-HEAD:    3d28998  fix: eliminate race conditions in tor-integration testScript
-```
-
-Key commits on `main`:
-```
-3d28998  fix: eliminate race conditions in tor-integration testScript
-86aa2a9  chore: bump selfprivacy-api to correct sanic test fix (disabledTestPaths)
-f1aa939  fix: correct Python dict/set literals in tor-integration testScript
-ea83492  chore: bump selfprivacy-api to pick up sanic test-skip fix
-9b0e2fc  fix: merge packages.x86_64-linux into single attrset to avoid duplicate attr
-```
-
-### 2c. Manager (Flutter app, upstream project)
-
-```
-Local:   /home/a/git/personal/selfprivacy/Manager-Ubuntu-SelfPrivacy-Over-alternative-nets
-Remote:  https://github.com/selfprivacy-over-alternative-nets/Manager-Ubuntu-SelfPrivacy-Over-alternative-nets.git
-Branch:  main
-```
+Both working trees are clean and pushed. Detailed notes/gotchas are also in Claude's memory file
+`project-selfprivacy-tor` (auto-loaded each session).
 
 ---
 
-## 3. Hard-Won Technical Knowledge (do not re-derive these)
+## 3. Test Status — ALL AUTOMATED TESTS PASS
 
-### 3a. sanic-25.x flaky test — the root cause of ALL build failures
+| Group | Where | IDs | Result |
+|-------|-------|-----|--------|
+| Level 1 unit (URL routing logic) | selfprivacy-api | T1.1–T1.17 | **23 passed** |
+| Level 2 tor-integration (real onion over a private Tor net) | selfprivacy-tor-tests | T2.1–T2.10 | **all pass** |
+| Level 2 https-integration (subdomain HTTPS) | selfprivacy-tor-tests | T3.1–T3.8 | **all pass** |
 
-sanic 25.12.0 has a timing-sensitive test `test_keep_alive_client_timeout` in
-`test_keep_alive_timeout.py` that fails inside the Nix sandbox with `assert 2 == 1` (timing skew).
-
-**Critical facts:**
-- sanic uses `doInstallCheck` (not `doCheck`), so `doCheck = false` does NOTHING
-- `disabledTestPaths` is a Nix **list**, not a string — `+` fails with "cannot coerce a list to a string"
-- Correct fix in `selfprivacy-api/flake.nix`:
-
-```nix
-mkPkgs = system: import nixpkgs {
-  inherit system;
-  overlays = [(final: prev: {
-    python312Packages = prev.python312Packages.overrideScope (_: pprev: {
-      sanic = pprev.sanic.overrideAttrs (old: {
-        disabledTestPaths = old.disabledTestPaths
-          ++ [ "test_keep_alive_timeout.py" ];
-      });
-    });
-  })];
-};
-```
-
-Then replace all `nixpkgs.legacyPackages.${system}` with `mkPkgs system` in `packages` and
-`checks` sections. (`legacyPackages` does not accept overlays — must use `import nixpkgs {overlays=[...]}`.)
-
-This is **already in the code at `f690f70f`** and **already committed**. Do not change it.
-
-**Verification:** sanic completed with `1829 passed, 26 deselected` (the 26 deselected are the
-`test_keep_alive_timeout.py` tests — confirmed working).
-
-### 3b. Python `{{}}` in Nix `''...''` strings
-
-In a Nix multiline string `''...''`, `{{` and `}}` produce **literal `{{` and `}}`** in the
-output Python — they do NOT produce single `{` and `}`. This is the opposite of Python f-strings.
-
-- **Outside f-strings** (dict/set literals): use single `{` and `}`
-- **Inside f-strings** (e.g. `-d '{{\"query\": ...}}'`): `{{` correctly escapes to `{` → leave those alone
-
-This bug was already fixed in `selfprivacy-tor-tests/tests/level2/tor-integration.nix` at commit `f1aa939`.
-
-### 3c. Race conditions in tor-integration.nix testScript
-
-Two race conditions were fixed in `3d28998`:
-
-1. After `systemctl restart selfprivacy-api`: wait for both unit AND port
-   ```python
-   backend.succeed("systemctl restart selfprivacy-api")
-   backend.wait_for_unit("selfprivacy-api.service")
-   backend.wait_for_open_port(5050, timeout=60)  # must come after
-   ```
-
-2. After starting HTTP server in background:
-   ```python
-   backend.succeed("python3 -m http.server 8080 --directory /etc/ssl/selfprivacy &")
-   backend.wait_for_open_port(8080, timeout=30)  # must come before client curl
-   client.succeed(f"curl -sf http://{backend.ip_address}:8080/cert.pem -o /tmp/backend-cert.pem")
-   ```
-
-### 3d. Capturing nix build exit codes
-
-`nix build ... 2>&1 | tail -30` always exits 0 (tail's exit code), masking failures.
-
-**Always** use this pattern:
-```bash
-nix build ... --no-link --print-build-logs > /tmp/some.log 2>&1
-echo "EXIT:$?" >> /tmp/some.log
-```
-
-Then check with `grep "EXIT:" /tmp/some.log` — `EXIT:0` = success.
-
----
-
-## 4. Current Build Status
-
-### SITUATION: Both builds were interrupted when the Claude session context was summarized.
-
-The two background build processes (`bsxj40xr4` and `bawxkzuvn`) were killed mid-run. The log files
-end with `error: interrupted by the user` and contain no `EXIT:` line.
-
-**Good news:** sanic already completed and its result is cached in `/nix/store/`. It will not
-rebuild. strawberry-graphql was at ~21% when killed — it will resume from its Nix cache checkpoint.
-
-### 4a. Restart Level 2 tor-integration (FIRST — takes ~15-25 min)
+### How to run / re-verify
 
 ```bash
-cd /home/a/git/personal/selfprivacy/selfprivacy-tor-tests
-NIX_CONFIG="experimental-features = nix-command flakes" \
-nix build .#checks.x86_64-linux.tor-integration \
-  --no-link --print-build-logs \
-  > /tmp/tor-integration-build.log 2>&1
-echo "EXIT:$?" >> /tmp/tor-integration-build.log
-```
-
-Run this in background. The test will:
-1. Build strawberry-graphql (partially cached, ~5-10 min)
-2. Build selfprivacy-api package (~2 min)
-3. Build NixOS VMs for chutney, backend, client nodes (~5 min)
-4. Run the 3-node QEMU nixosTest with assertions T2.1–T2.10
-
-Success looks like: `EXIT:0` at end of log, and the last few lines mentioning the test passing.
-
-### 4b. Restart Level 1 pytest-vm (SECOND — starts after 4a's sanic/strawberry build completes)
-
-```bash
+# Level 1  (~2 min + VM)
 cd /home/a/git/personal/selfprivacy/selfprivacy-api
-NIX_CONFIG="experimental-features = nix-command flakes" \
-nix run .#pytest-vm -- tests/test_onion_routing.py -v \
-  > /tmp/pytest-vm-level1.log 2>&1
-echo "EXIT:$?" >> /tmp/pytest-vm-level1.log
-```
+nix run .#pytest-vm -- tests/test_onion_routing.py -v          # look for "23 passed"
 
-Tests T1.1–T1.17 as defined in `/home/a/git/personal/selfprivacy/test_plan.md` §7.
-
-### 4c. Level 2 https-integration (AFTER 4a passes)
-
-```bash
+# Level 2 tor + https  (~10–25 min each under TCG; see §5 for speed)
 cd /home/a/git/personal/selfprivacy/selfprivacy-tor-tests
-NIX_CONFIG="experimental-features = nix-command flakes" \
-nix build .#checks.x86_64-linux.https-integration \
-  --no-link --print-build-logs \
-  > /tmp/https-integration-build.log 2>&1
-echo "EXIT:$?" >> /tmp/https-integration-build.log
+nix build .#checks.x86_64-linux.tor-integration   --no-link -L # "All Level 2 Tor integration tests passed."
+nix build .#checks.x86_64-linux.https-integration --no-link -L # "HTTPS integration tests: ALL PASSED"
 ```
+
+Prefix with `NIX_CONFIG="experimental-features = nix-command flakes"` if flakes aren't globally on.
+Plain-language description of what each group checks: `selfprivacy-tor-tests/how_to_test_what.md`.
 
 ---
 
-## 5. If a Test Fails
+## 4. Hard-Won Knowledge (do NOT re-derive)
 
-### Debugging Level 2 (nixosTest)
+Most of Task 3 was fixing bugs that only surfaced on a full run. Full detail is in commit
+`1035837` and the memory file; the essentials:
 
-**Interactive mode** — starts QEMU VMs with a Python shell:
-```bash
-cd /home/a/git/personal/selfprivacy/selfprivacy-tor-tests
-NIX_CONFIG="experimental-features = nix-command flakes" \
-nix run .#level2-driver -- --interactive
-```
-
-**Build just the driver** (fast, no test execution):
-```bash
-NIX_CONFIG="experimental-features = nix-command flakes" \
-nix build .#packages.x86_64-linux.level2-driver --no-link
-```
-
-**Read the full test script:**
-```
-/home/a/git/personal/selfprivacy/selfprivacy-tor-tests/tests/level2/tor-integration.nix
-```
-
-### Debugging Level 1
-
-```bash
-cd /home/a/git/personal/selfprivacy/selfprivacy-api
-pytest tests/test_onion_routing.py -v  # host Python, no VM, fastest iteration
-```
-
-Key source files:
-- `selfprivacy_api/services/service.py` — `Service.get_url()`
-- `selfprivacy_api/services/templated_service.py` — `TemplatedService.get_url()`
-- `selfprivacy_api/services/onion_routing.py` — `TOR_SERVICE_PATHS` dict
-- `tests/test_onion_routing.py` — T1.1–T1.17
+- **sanic flaky test** (already fixed at api `f690f70f`, do not touch): `disabledTestPaths ++ [...]`
+  via a `mkPkgs` overlay in `selfprivacy-api/flake.nix`. `doCheck=false` does nothing (sanic uses
+  `doInstallCheck`). Verified `1829 passed, 26 deselected`.
+- **The Tor test network was rebuilt from scratch** (tor-integration.nix). A working private Tor
+  net needs: `tor-gencert` for v3 authority keys; `DirAuthority` lines with `v3ident` + relay
+  fingerprint; `V3AuthVoteDelay+DistDelay < half VotingInterval`; **extra relays** beyond the 3
+  authorities + `EnforceDistinctSubnets 0`; and `AssumeReachable 1` + `TestingDirAuthVote{Guard,
+  Exit,HSDir} *` to escape the fresh-network "0% guard bandwidth" deadlock. Keygen runs as one
+  oneshot; tor services are gated with `ConditionPathExists=/var/lib/tor-da/dirservers.conf`;
+  das/backend get more cores/RAM or backdoor.service's serial console times out.
+- **Nix `''…''` gotchas**: a literal `''` inside a testScript string terminates it; col-0 lines
+  defeat the `''` dedent (this indented a shell here-doc delimiter and froze the https VM at
+  switch-root — fixed by using `pkgs.writeText`+`cp` instead of here-docs). NixOS test `Machine`
+  has **no `.ip_address`** — use `getent ahostsv4 <node>`.
+- **Auth over GraphQL**: this API returns **HTTP 200 with an `errors` body** for a bad token (not
+  401/403), and `api.version` is a **public** field — so auth tests must query an authenticated
+  field like `{ system { __typename } }`.
+- **The API is slow to bind 5050** (imports strawberry): use generous `wait_for_open_port` /
+  `wait_for_unit` timeouts (180–600 s), especially under TCG.
 
 ---
 
-## 6. Remaining Work (all passing tests unlock these)
+## 5. Environment gotchas (bit us repeatedly)
 
-### 6a. Level 3 E2E Flutter tests (USER ACTION — manual)
+- **KVM vs TCG.** `nix build .#checks.*` runs VMs in the `nixbld` sandbox, which **cannot open
+  /dev/kvm** (nixbld isn't in the `kvm` group; `/dev/kvm` is `other::---`) → slow **TCG** emulation
+  (2.5-min boots, ~100-s api starts). All tests still pass, just slowly. To go fast:
+  `sudo setfacl -m g:nixbld:rw /dev/kvm`, **or** run the driver as the user (who has KVM):
+  `nix run .#level2-tor-run` / `nix run .#level2-https-run` (non-interactive driver packages added
+  to the flake). `nix run .#pytest-vm` already runs as the user → KVM.
+- **Stray QEMU VMs block later runs.** A leftover VM holds the test VLAN socket, so the next VM
+  hangs at "start all VLans" with no error. If a run stalls there:
+  `pkill -KILL -f qemu-system; pkill -KILL -f nixos-test-driver` and retry.
+- **Detached runs of `nix run .#…driver`** need real stdio — `setsid … </dev/null` kills them at
+  "start all VLans". Use the Bash tool's `run_in_background`, or `nix build .#checks.*`.
+- **Capturing exit codes:** `nix build … 2>&1 | tail` masks failures (tail exits 0). Use
+  `nix build … --no-link -L > /tmp/x.log 2>&1; echo "EXIT:$?" >> /tmp/x.log`; check `EXIT:0`.
 
-After Level 2 passes, the user runs the Flutter app manually. From
-`/home/a/git/personal/selfprivacy/test_plan.md` §9:
+---
 
+## 6. Remaining Work (USER ACTIONS)
+
+### 6a. Level 3 E2E — Flutter (desktop) + Android, manual
+Steps in `/home/a/git/personal/selfprivacy/test_plan.md` §9 (T3.1–T3.9) and §10 (T4.1–T4.7).
+Uses the real app in `Manager-…-Over-alternative-nets/` against a test server over Tor:
 ```bash
 cd Manager-Ubuntu-SelfPrivacy-Over-alternative-nets/
-./build-and-run.sh --app-linux   # Ubuntu
-# OR: nix develop -c ./build-and-run.sh --app-linux  # NixOS
+./build-and-run.sh --app-linux                 # Ubuntu
+# nix develop -c ./build-and-run.sh --app-linux  # NixOS
 ```
+Onion + token come from the running backend VM (`/var/lib/tor/selfprivacy/hostname`,
+`/etc/selfprivacy/secrets.json`). Note: `test_plan.md` describes a **Chutney** setup, but the
+automated Level 2 tests use a **self-contained** Tor net (no Chutney) — for a manual E2E you still
+need a Tor test net or Chutney to reach the .onion.
 
-Enter the onion address shown in the backend VM (from
-`/var/lib/tor/selfprivacy/hostname`) and the API token from
-`/etc/selfprivacy/secrets.json`. Test cases T3.1–T3.9.
+### 6b. Upstream PR to git.selfprivacy.org
+Instructions in `selfprivacy-api/UPSTREAM_PR.md`. PR diff = only the Python + unit-test changes on
+`tor-support` (test infra stays in selfprivacy-tor-tests).
 
-For development/testing without the full VM stack, use:
-- Onion address: `uok24ygehb2wcdxetrcb5wrpwxspanbmhwdp3pxzn6thcqgh63edbiad.onion`
-- Token: `test-token-for-tor-development`
-
-### 6b. Upstream PR to git.selfprivacy.org (USER ACTION)
-
-Full instructions in `/home/a/git/personal/selfprivacy/selfprivacy-api/UPSTREAM_PR.md`.
-
-Summary:
-1. Fork `https://git.selfprivacy.org/SelfPrivacy/selfprivacy-rest-api`
-2. Push the `tor-support` branch as `upstream-pr/tor-onion-routing`
-3. Open PR. The PR diff is only the Python + unit test changes (no test infra — that lives in selfprivacy-tor-tests).
+### Also NOT covered by any test yet (would need manual checking)
+Adding/removing a service; actually logging into Nextcloud and storing a file; backups
+(enable → run → restore). Email is intentionally excluded (can't work over Tor).
 
 ---
 
-## 7. Full Test Plan Reference
+## 7. User Preferences (for Claude)
 
-`/home/a/git/personal/selfprivacy/test_plan.md`
-
-Quick reference of test IDs:
-- **T1.1–T1.9**: `Service.get_url()` with `.onion` vs normal domain
-- **T1.10**: `TemplatedService` with `showUrl=false` → `None`
-- **T1.11–T1.12**: `ServiceManager.get_url()` with both domain types
-- **T1.13–T1.14**: `Prometheus.get_url()`
-- **T1.15–T1.17**: User repository provider assertions
-- **T2.1–T2.3**: Connectivity + auth over Tor SOCKS
-- **T2.4**: All service URLs are onion-path format (zero subdomain URLs)
-- **T2.5–T2.9**: nginx path routing (no 404s)
-- **T2.10**: TLS cert SAN matches `.onion` hostname
-- **T3.1–T3.9**: Flutter E2E (manual)
-- **T4.1–T4.7**: Android E2E (manual, optional)
-
----
-
-## 8. flake.lock Pin State
-
-`selfprivacy-tor-tests/flake.lock` (HEAD `86aa2a9`) pins:
-- `selfprivacy-api` → `f690f70f` (correct — sanic fix via `disabledTestPaths`)
-- `nixpkgs` (tor-tests) → `6d65bfc1` (nixos-26.05)
-- `nixpkgs_2` (selfprivacy-api's nixpkgs) → `8eeec934` (nixos-26.05, slightly older pin)
-
-Do **not** update the pin unless there is a specific reason — the current combination is known-working for sanic.
-
----
-
-## 9. User Preferences (for Claude)
-
-- Run sudo commands only if absolutely necessary; ask the user to run them otherwise.
-- All tests must be fully deterministic — no public Tor network in automated tests.
-- User was on a walk; work autonomously until everything passes or a blocker requires user input.
-- Do not stop until the project is completely done.
+- **Ask before running sudo** — run sudo only if absolutely necessary; otherwise ask the user.
+- Automated tests must be **fully deterministic** — no public Tor network.
+- Work **autonomously** until everything passes or a real blocker needs the user; don't stop early.
+- Commit/push only when asked. Prefers **concise** output and docs.
+```
