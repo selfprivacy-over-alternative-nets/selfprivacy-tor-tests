@@ -3,11 +3,11 @@
     "manager": {
       "flake": false,
       "locked": {
-        "lastModified": 1785692984,
-        "narHash": "sha256-OhQlLuVIPzVELwqi5NLCrmdaPNHOPgVwPeAemqbf/qI=",
+        "lastModified": 1790555284,
+        "narHash": "sha256-4BdG6UTnbSJlTqkFEdMaqmaAlCuUxjfpOPZE6WDPqlU=",
         "ref": "refs/heads/main",
-        "rev": "f8235a0a4832420c93cf58ca0da793b2f2c9fa63",
-        "revCount": 53,
+        "rev": "f94349261c3f0ff5b367c16caa581cc79ef0e482",
+        "revCount": 64,
         "type": "git",
         "url": "https://github.com/selfprivacy-over-alternative-nets/Manager-Ubuntu-SelfPrivacy-Over-alternative-nets.git"
       },
@@ -60,11 +60,11 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1785695390,
-        "narHash": "sha256-okGfCQxjzn0Ghn09klD/OpLm0nwxITe3Gi1sjwrUKgE=",
+        "lastModified": 1790539182,
+        "narHash": "sha256-PRi8if4hM+4wiU2FVz3Ko9y6sCaW8RGzlGbHw7Wse1k=",
         "ref": "tor-support",
-        "rev": "f690f70f12aed993235d384b08132117321947b3",
-        "revCount": 2031,
+        "rev": "12b250df2601093a358673162d4121e7908681c9",
+        "revCount": 2033,
         "type": "git",
         "url": "https://github.com/selfprivacy-over-alternative-nets/selfprivacy-api.git"
       },
