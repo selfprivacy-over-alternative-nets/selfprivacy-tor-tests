@@ -2,7 +2,10 @@
   description = "SelfPrivacy-over-Tor integration and E2E test infrastructure";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    # Pinned to the SAME nixpkgs the deployed backend builds from
+    # (Manager/backend/flake.lock), so the L2 VM boots the same nixpkgs as production instead of
+    # drifting on nixos-26.05. Bump this rev whenever the backend's nixpkgs pin changes.
+    nixpkgs.url = "github:NixOS/nixpkgs/23d72dabcb3b12469f57b37170fcbc1789bd7457";
 
     selfprivacy-api = {
       url = "git+https://github.com/selfprivacy-over-alternative-nets/selfprivacy-api.git?ref=tor-support";
